@@ -32,41 +32,35 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 
 	value := bytes.TrimSpace(parts[1])
 	key = strings.TrimSpace(key)
-
-	// Check if key contains invalid character
-	for _, char := range key {
-		if !isValidHeaderChar(char) {
-			return 0, false, fmt.Errorf("invalid character in header name: %c", char)
-		}
+	if !validTokens([]byte(key)) {
+		return 0, false, fmt.Errorf("invalid header token found: %s", key)
 	}
-
-	key = strings.ToLower(key)
-
 	h.Set(key, string(value))
 	return idx + 2, false, nil
 }
 
 func (h Headers) Set(key, value string) {
+	key = strings.ToLower(key)
+	v, ok := h[key]
+	if ok {
+		value = strings.Join([]string{
+			v,
+			value,
+		}, ", ")
+	}
 	h[key] = value
 }
 
-func isValidHeaderChar(char rune) bool {
-	if char >= 'a' && char <= 'z' {
-		return true
-	}
+var tokenChars = []byte{'!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~'}
 
-	if char >= 'A' && char <= 'Z' {
-		return true
+func validTokens(data []byte) bool {
+	for _, c := range data {
+		if !(c >= 'A' && c <= 'Z' ||
+			c >= 'a' && c <= 'z' ||
+			c >= '0' && c <= '9' ||
+			c == '-') {
+			return false
+		}
 	}
-
-	if char >= '0' && char <= '9' {
-		return true
-	}
-
-	switch char {
-	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
-		return true
-	}
-
-	return false
+	return true
 }
