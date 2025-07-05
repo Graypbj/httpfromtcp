@@ -12,7 +12,7 @@ import (
 	"github.com/Graypbj/httpfromtcp/internal/response"
 )
 
-type Handler func(w io.Writer, req *request.Request) *HandlerError
+type Handler func(w *response.Writer, req *request.Request) *HandlerError
 
 type HandlerError struct {
 	StatusCode response.StatusCode
@@ -81,15 +81,13 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	buf := bytes.NewBuffer([]byte{})
-	hErr := s.handler(buf, req)
+	rw := &response.Writer{
+		Writer: buf,
+	}
+	hErr := s.handler(rw, req)
 	if hErr != nil {
 		hErr.Write(conn)
 		return
 	}
-	b := buf.Bytes()
-	response.WriteStatusLine(conn, response.StatusCodeSuccess)
-	headers := response.GetDefaultHeaders(len(b))
-	response.WriteHeaders(conn, headers)
-	conn.Write(b)
-	return
+	rw.Flush(conn)
 }
