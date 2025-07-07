@@ -1,103 +1,97 @@
 package response
 
 import (
-	"errors"
 	"fmt"
 	"io"
+
+	"github.com/Graypbj/httpfromtcp/internal/headers"
 )
 
-type StatusCode int
-
-type Writer struct {
-	Writer           io.Writer
-	statusCode       StatusCode
-	headers          map[string]string
-	body             []byte
-	statusCodeWasSet bool
-	headersWereSet   bool
-	bodyWasWritten   bool
-}
+type writerState int
 
 const (
-	StatusCodeSuccess             StatusCode = 200
-	StatusCodeBadRequest          StatusCode = 400
-	StatusCodeInternalServerError StatusCode = 500
+	writerStateStatusLine writerState = iota
+	writerStateHeaders
+	writerStateBody
 )
 
-func getStatusLine(statusCode StatusCode) []byte {
-	reasonPhrase := ""
-	switch statusCode {
-	case StatusCodeSuccess:
-		reasonPhrase = "OK"
-	case StatusCodeBadRequest:
-		reasonPhrase = "Bad Request"
-	case StatusCodeInternalServerError:
-		reasonPhrase = "Internal Server Error"
-	}
-	return []byte(fmt.Sprintf("HTTP/1.1 %d %s\r\n", statusCode, reasonPhrase))
+type Writer struct {
+	writerState writerState
+	writer      io.Writer
 }
 
-func WriteStatusLine(w io.Writer, statusCode StatusCode) error {
-	_, err := w.Write(getStatusLine(statusCode))
-	return err
+func NewWriter(w io.Writer) *Writer {
+	return &Writer{
+		writerState: writerStateStatusLine,
+		writer:      w,
+	}
 }
 
 func (w *Writer) WriteStatusLine(statusCode StatusCode) error {
-	if w.statusCodeWasSet {
-		return errors.New("status line already set")
+	if w.writerState != writerStateStatusLine {
+		return fmt.Errorf("cannot write status line in state %d", w.writerState)
 	}
-	w.statusCode = statusCode
-	w.statusCodeWasSet = true
-	return nil
+	defer func() { w.writerState = writerStateHeaders }()
+	_, err := w.writer.Write(getStatusLine(statusCode))
+	return err
 }
 
-func (w *Writer) WriteHeaders(headers map[string]string) error {
-	if !w.statusCodeWasSet {
-		return errors.New("must call WriteStatusLine before WriteHeaders")
+func (w *Writer) WriteHeaders(h headers.Headers) error {
+	if w.writerState != writerStateHeaders {
+		return fmt.Errorf("cannot write headers in state %d", w.writerState)
 	}
-	if w.headersWereSet {
-		return errors.New("headers already set")
+	defer func() { w.writerState = writerStateBody }()
+	for k, v := range h {
+		_, err := w.writer.Write([]byte(fmt.Sprintf("%s: %s\r\n", k, v)))
+		if err != nil {
+			return err
+		}
 	}
-	w.headers = headers
-	w.headersWereSet = true
-	return nil
+	_, err := w.writer.Write([]byte("\r\n"))
+	return err
 }
 
 func (w *Writer) WriteBody(p []byte) (int, error) {
-	if !w.statusCodeWasSet || !w.headersWereSet {
-		return 0, errors.New("must call WriteStatusLine and WriteHeaders before WriteBody")
+	if w.writerState != writerStateBody {
+		return 0, fmt.Errorf("cannot write body in state %d", w.writerState)
 	}
-	if w.bodyWasWritten {
-		return 0, errors.New("body was already written")
-	}
-	w.body = make([]byte, len(p))
-	copy(w.body, p)
-	w.bodyWasWritten = true
-	return len(p), nil
+	return w.writer.Write(p)
 }
 
-func (w *Writer) Flush(to io.Writer) error {
-	statusLine := getStatusLine(w.statusCode)
-	if _, err := to.Write(statusLine); err != nil {
-		return err
+func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
+	if w.writerState != writerStateBody {
+		return 0, fmt.Errorf("cannot write body in state %d", w.writerState)
 	}
+	chunkSize := len(p)
 
-	for k, v := range w.headers {
-		headerLine := fmt.Sprintf("%s: %s\r\n", k, v)
-		if _, err := to.Write([]byte(headerLine)); err != nil {
-			return err
-		}
+	nTotal := 0
+	n, err := fmt.Fprintf(w.writer, "%x\r\n", chunkSize)
+	if err != nil {
+		return nTotal, err
 	}
+	nTotal += n
 
-	if _, err := to.Write([]byte("\r\n")); err != nil {
-		return err
+	n, err = w.writer.Write(p)
+	if err != nil {
+		return nTotal, err
 	}
+	nTotal += n
 
-	if len(w.body) > 0 {
-		if _, err := to.Write(w.body); err != nil {
-			return err
-		}
+	n, err = w.writer.Write([]byte("\r\n"))
+	if err != nil {
+		return nTotal, err
 	}
+	nTotal += n
+	return nTotal, nil
+}
 
-	return nil
+func (w *Writer) WriteChunkedBodyDone() (int, error) {
+	if w.writerState != writerStateBody {
+		return 0, fmt.Errorf("cannot write body in state %d", w.writerState)
+	}
+	n, err := w.writer.Write([]byte("0\r\n\r\n"))
+	if err != nil {
+		return n, err
+	}
+	return n, nil
 }
